@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # RWKV: RWKV Time-mix + RWKV Channel-mix
 ########################################################################################################
 
-def RWKV_Init(module, item_num, args, rwkv_emb_scale=4): # fancy initialization of all lin & emb layer in the module
+def RWKV_Init(module, item_num, args): # fancy initialization of all lin & emb layer in the module
     for m in module.modules():
         if not isinstance(m, (nn.Linear, nn.Embedding)):
             continue
@@ -33,12 +33,12 @@ def RWKV_Init(module, item_num, args, rwkv_emb_scale=4): # fancy initialization 
                 if shape[0] > shape[1]:
                     gain = math.sqrt(shape[0] / shape[1])
                 if shape[0] == item_num and shape[1] == args.hidden_units: # final projection?
-                    scale = rwkv_emb_scale
+                    scale = args.rwkv_emb_scale
 
             if isinstance(m, nn.Embedding):
                 gain = math.sqrt(max(shape[0], shape[1]))
                 if shape[0] == item_num and shape[1] == args.hidden_units: # token emb?
-                    scale = rwkv_emb_scale
+                    scale = args.rwkv_emb_scale
 
             if hasattr(m, 'scale_init'):
                 scale = m.scale_init
@@ -63,7 +63,7 @@ class RWKV_TimeMix(nn.Module):
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
         self.layer_id = layer_id
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         with torch.no_grad():  # initial time_w curves for better convergence
@@ -162,7 +162,7 @@ class RWKV_ChannelMix(nn.Module):
         return rwkv
 
 class RWKV_TinyAttn(nn.Module): # extra tiny attention
-    def __init__(self, args, n_head=2, d_attn=2):
+    def __init__(self, args, n_head=8, d_attn=4):
         super().__init__()
         self.d_attn = d_attn
         self.n_head = n_head
@@ -224,13 +224,13 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     return (q * cos) + (rotate_half(q) * sin), (k * cos) + (rotate_half(k) * sin)
 
 class MHA_rotary(nn.Module):
-    def __init__(self, args, layer_id, maxlen=200, n_head=8, n_attn=8, time_shift = False):
+    def __init__(self, args, layer_id, n_head=8, n_attn=8, time_shift = False):
         super().__init__()
         self.layer_id = layer_id
         self.n_head = n_head
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         if time_shift:
@@ -303,14 +303,14 @@ class GeGLU(torch.nn.Module):
 ########################################################################################################
 
 class MHA_pro(nn.Module):
-    def __init__(self, args, layer_id, maxlen=200, n_head=8, n_attn=8):
+    def __init__(self, args, layer_id, n_head=8, n_attn=8):
         super().__init__()
         self.layer_id = layer_id
         self.n_head = n_head
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
         #  self.layer_id = layer_id
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         self.time_w = nn.Parameter(torch.ones(self.n_head, self.maxlen))
@@ -436,13 +436,11 @@ class GPT(nn.Module):
                  user_num,
                  item_num,
                  args,
-                 maxlen=200,
                  n_layer=12,
-                 model_type="RWKV",
+                 model_type="MHA_shift",
                  n_head=8,
                  n_attn=8,
                  n_ffn=4,
-                 rwkv_emb_scale=4
                  ):
         super().__init__()
 
@@ -451,13 +449,13 @@ class GPT(nn.Module):
         self.dev = args.device
         self.item_emb = nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
 
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.n_layer = n_layer
         self.model_type = model_type
         self.n_head = n_head
         self.n_attn = n_attn
         self.n_ffn = n_ffn
-        self.rwkv_emb_scale = rwkv_emb_scale
+        self.rwkv_emb_scale = args.rwkv_emb_scale
 
         self.blocks = nn.Sequential(*[Block(args, i, self.model_type) for i in range(self.n_layer)])
 
@@ -472,7 +470,7 @@ class GPT(nn.Module):
         self.register_buffer("copy_mask", torch.tril(torch.ones(args.hidden_units, args.hidden_units)))
 
         if self.model_type == 'RWKV':
-            RWKV_Init(self, self.item_num, args, self.rwkv_emb_scale)
+            RWKV_Init(self, self.item_num, args)
         else:
             self.apply(self._init_weights)
 

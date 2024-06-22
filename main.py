@@ -5,6 +5,7 @@ import argparse
 
 from model import SASRec
 from models.RWKV.GPT_Rec import *
+from models.PerceiverAR.Per_Rec import *
 from utils import *
 
 def str2bool(s):
@@ -17,16 +18,18 @@ parser.add_argument('--dataset', required=True)
 parser.add_argument('--train_dir', required=True)
 parser.add_argument('--batch_size', default=128, type=int)
 parser.add_argument('--lr', default=0.001, type=float)
-parser.add_argument('--maxlen', default=50, type=int)
-parser.add_argument('--hidden_units', default=100, type=int)
+parser.add_argument('--maxlen', default=200, type=int)
+parser.add_argument('--hidden_units', default=64, type=int)
 parser.add_argument('--num_blocks', default=2, type=int)
 parser.add_argument('--num_epochs', default=201, type=int)
 parser.add_argument('--num_heads', default=1, type=int)
-parser.add_argument('--dropout_rate', default=0.5, type=float)
+parser.add_argument('--dropout_rate', default=0.2, type=float)
 parser.add_argument('--l2_emb', default=0.0, type=float)
 parser.add_argument('--device', default='cpu', type=str)
 parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
+
+parser.add_argument('--rwkv_emb_scale', default=4, type=int)
 
 args = parser.parse_args()
 if not os.path.isdir(args.dataset + '_' + args.train_dir):
@@ -50,7 +53,7 @@ if __name__ == '__main__':
     f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
     
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
-    model = GPT(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
+    model = PerceiverAR(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
     
     for name, param in model.named_parameters():
         try:
@@ -125,7 +128,7 @@ if __name__ == '__main__':
     
         if epoch == args.num_epochs:
             folder = args.dataset + '_' + args.train_dir
-            fname = 'GPT.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
+            fname = 'PerceiverAR.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
             fname = fname.format(args.num_epochs, args.lr, args.num_blocks, args.num_heads, args.hidden_units, args.maxlen)
             torch.save(model.state_dict(), os.path.join(folder, fname))
     
