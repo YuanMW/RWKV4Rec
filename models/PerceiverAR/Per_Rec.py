@@ -38,14 +38,28 @@ class CrossAttention(nn.Module):
         k = torch.permute(k, [0, 2, 3, 1])                   # B, nh,   i,   L_kv
 
         v = torch.reshape(v, [B, L_kv, self.n_heads, head_dim])    # B, L_kv, nh,   i
-        v = torch.permute(v, [0, 2, 1, 3])                   # B, nh,   L_kv, i
+        v = torch.permute(v, [0, 2, 1, 3])                   # B, nh,   L_kv, i   # [128, 16, 200, 4]
 
         qk = torch.matmul(q, k) * self.scale                 #(B, nh, L_q, i)(B, nh, i, L_kv)
                                                              # B, nh, L_q, L_kv
 
         qk = qk.masked_fill(self.bias[:,:,:L_q,:L_kv] == 0, float('-inf'))
 
-        attn = torch.softmax(qk, dim=-1)
+        '''
+        if L_v < L_q:
+        # 假设 L_v 是 L_q 的整数除数，简化示例
+        reduction_factor = L_v // L_q
+        v_attn_pooled = v_attn.view(B, L_q // reduction_factor, reduction_factor, nh, i).mean(dim=2)
+        # 现在形状为 [B, L_v, nh, i]
+        else:
+        raise ValueError("This example assumes reducing sequence length, not expanding.")
+        # 然后按照原来的方式进行后续操作
+        v_attn_pooled = torch.permute(v_attn_pooled, [0, 2, 1, 3])         # B, nh, L_v, i
+        v_attn_final = torch.reshape(v_attn_pooled, [B, L_v, D_q])        # B, L_v, D_q
+        '''
+
+        attn = torch.softmax(qk, dim=-1)  # [128, 16, 1, 200]
+        breakpoint()
 
         v_attn = torch.matmul(attn, v)                       #(B, nh, L_q, L_kv)(B, nh, L_kv, i)
                                                              # B, nh, L_q, i
@@ -179,9 +193,9 @@ class PerceiverAR(nn.Module):
 
         # 修改y的切片起点为序列中间，向下取整
         mid_index = self.maxlen // 2
-        y = x
+        # y = x
         # y = x[:, mid_index:]  # 从序列中间位置到末尾的部分 (128,100,50)
-        # y = x[:, -1:] # size=(128, 1, 50)
+        y = x[:, -1:] # size=(128, 1, 50)
         # y = x[:, self.maxlen:]  # size=(128, 0, 50)
 
         x = self.cross_attn(kv = x, q = y)
