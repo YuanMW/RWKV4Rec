@@ -1,4 +1,3 @@
-#(一个备份，正在一步步修改参数为args中的默认参数）
 ########################################################################################################
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
 ########################################################################################################
@@ -8,47 +7,49 @@ import logging
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
 logger = logging.getLogger(__name__)
+
 
 ########################################################################################################
 # RWKV: RWKV Time-mix + RWKV Channel-mix
 ########################################################################################################
 
-def RWKV_Init(module, item_num, args, rwkv_emb_scale=4): # fancy initialization of all lin & emb layer in the module
+def RWKV_Init(module, item_num, args):  # fancy initialization of all lin & emb layer in the module
     for m in module.modules():
         if not isinstance(m, (nn.Linear, nn.Embedding)):
             continue
         with torch.no_grad():
             name = '[unknown weight]'
-            for name, parameter in module.named_parameters(): # find the name of the weight
+            for name, parameter in module.named_parameters():  # find the name of the weight
                 if id(m.weight) == id(parameter):
                     break
 
             shape = m.weight.data.shape
             gain = 1.0  # positive: gain for orthogonal, negative: std for normal
-            scale = 1.0 # extra scale for gain
+            scale = 1.0  # extra scale for gain
 
             if isinstance(m, nn.Linear):
                 if m.bias is not None:
                     m.bias.data.zero_()
                 if shape[0] > shape[1]:
                     gain = math.sqrt(shape[0] / shape[1])
-                if shape[0] == item_num and shape[1] == args.hidden_units: # final projection?
-                    scale = rwkv_emb_scale
+                if shape[0] == item_num and shape[1] == args.hidden_units:  # final projection?
+                    scale = args.rwkv_emb_scale
 
             if isinstance(m, nn.Embedding):
                 gain = math.sqrt(max(shape[0], shape[1]))
-                if shape[0] == item_num and shape[1] == args.hidden_units: # token emb?
-                    scale = rwkv_emb_scale
+                if shape[0] == item_num and shape[1] == args.hidden_units:  # token emb?
+                    scale = args.rwkv_emb_scale
 
             if hasattr(m, 'scale_init'):
                 scale = m.scale_init
 
-            print(str(shape[0]).ljust(5), str(shape[1]).ljust(5), f'{round(scale,2):g}'.ljust(4), name)
+            print(str(shape[0]).ljust(5), str(shape[1]).ljust(5), f'{round(scale, 2):g}'.ljust(4), name)
 
             gain *= scale
             if gain == 0:
-                nn.init.zeros_(m.weight) # zero init is great for some RWKV matrices
+                nn.init.zeros_(m.weight)  # zero init is great for some RWKV matrices
             elif gain > 0:
                 nn.init.orthogonal_(m.weight, gain=gain)
             else:
@@ -56,18 +57,22 @@ def RWKV_Init(module, item_num, args, rwkv_emb_scale=4): # fancy initialization 
 
 
 class RWKV_TimeMix(nn.Module):
-    def __init__(self, args, layer_id, maxlen=200, n_head=8, n_attn=8):
+    def __init__(self, args, layer_id, n_head=8, n_attn=8, n_layer=12):
         super().__init__()
         self.layer_id = layer_id
+        self.n_layer = n_layer
 
         self.n_head = n_head
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
         self.layer_id = layer_id
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         with torch.no_grad():  # initial time_w curves for better convergence
+            ratio_0_to_1 = (layer_id / (self.n_layer - 1))  # 0 to 1
+            ratio_1_to_almost0 = (1.0 - (layer_id / self.n_layer))  # 1 to ~0
+
             ww = torch.ones(self.n_head, self.maxlen)
             curve = torch.tensor([-(self.maxlen - 1 - i) for i in range(self.maxlen)])  # the distance
             for h in range(self.n_head):
@@ -77,6 +82,14 @@ class RWKV_TimeMix(nn.Module):
                     decay_speed = 0.0
                 ww[h] = torch.exp(curve * decay_speed)
                 # print('layer', layer_id, 'head', h, 'decay_speed', round(decay_speed, 4), ww[h][:5].numpy(), '...', ww[h][-5:].numpy())
+
+            # fancy time_mix
+            x = torch.ones(1, 1, args.hidden_units)
+            for i in range(args.hidden_units):
+                x[0, 0, i] = i / args.hidden_units
+            self.time_mix_k = nn.Parameter(torch.pow(x, ratio_1_to_almost0))
+            self.time_mix_v = nn.Parameter(torch.pow(x, ratio_1_to_almost0) + 0.3 * ratio_0_to_1)
+            self.time_mix_r = nn.Parameter(torch.pow(x, 0.5 * ratio_1_to_almost0))
         self.time_w = nn.Parameter(ww)
 
         self.time_alpha = nn.Parameter(torch.ones(self.n_head, 1, self.maxlen))
@@ -104,18 +117,20 @@ class RWKV_TimeMix(nn.Module):
         w = F.pad(self.time_w, (0, TT))
         w = torch.tile(w, [TT])
         w = w[:, :-TT].reshape(-1, TT, 2 * TT - 1)
-        w = w[:, :, TT-1:] # w is now a circulant matrix
+        w = w[:, :, TT - 1:]  # w is now a circulant matrix
         w = w[:, :T, :T] * self.time_alpha[:, :, :T] * self.time_beta[:, :T, :]
 
-        x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)
-        # if hasattr(self, 'tiny_att'):
-        #     tiny_att = self.tiny_att(x, self.mask)
+        # Mix x with the previous timestep to produce xk, xv, xr
+        xx = self.time_shift(x)  # [128, 200, 50]n
+        xk = x * self.time_mix_k + xx * (1 - self.time_mix_k)
+        xv = x * self.time_mix_v + xx * (1 - self.time_mix_v)
+        xr = x * self.time_mix_r + xx * (1 - self.time_mix_r)
 
-        k = self.key(x)
-        v = self.value(x)
-        r = self.receptance(x)
+        k = self.key(xk)
+        v = self.value(xv)
+        r = self.receptance(xr)
 
-        k = torch.clamp(k, max=30, min=-60) # clamp extreme values. e^30 = 10^13
+        k = torch.clamp(k, max=30, min=-60)  # clamp extreme values. e^30 = 10^13
         k = torch.exp(k)
         sum_k = torch.cumsum(k, dim=1)
 
@@ -131,15 +146,23 @@ class RWKV_TimeMix(nn.Module):
 
         return rwkv * self.time_gamma[:T, :]
 
+
 class RWKV_ChannelMix(nn.Module):
     def __init__(self, args, layer_id, n_head=8, n_ffn=4):
         super().__init__()
         self.layer_id = layer_id
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.n_head = n_head
-        self.n_ffn = n_ffn
+        # self.n_ffn = n_ffn
 
-        hidden_sz = 5 * self.n_ffn // 2  # can use smaller hidden_sz because of receptance gating
+        with torch.no_grad():  # init to "shift half of the channels"
+            x = torch.ones(1, 1, args.hidden_units)
+            for i in range(args.hidden_units // 2):
+                x[0, 0, i] = 0
+        self.time_mix = nn.Parameter(x)
+
+        # hidden_sz = 5 * self.n_ffn // 2  # can use smaller hidden_sz because of receptance gating
+        hidden_sz = 4 * args.hidden_units
         self.key = nn.Linear(args.hidden_units, hidden_sz)
         self.value = nn.Linear(args.hidden_units, hidden_sz)
         self.weight = nn.Linear(hidden_sz, args.hidden_units)
@@ -150,20 +173,22 @@ class RWKV_ChannelMix(nn.Module):
 
     def forward(self, x):
         B, T, C = x.size()
-        
-        x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)
+
+        #  x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)
+        x = x * self.time_mix + self.time_shift(x) * (1 - self.time_mix)
         k = self.key(x)
         v = self.value(x)
         r = self.receptance(x)
-        
-        wkv = self.weight(F.mish(k) * v) # i find mish is a bit better than gelu
+
+        wkv = self.weight(F.mish(k) * v)  # i find mish is a bit better than gelu
 
         rwkv = torch.sigmoid(r) * wkv
 
         return rwkv
 
-class RWKV_TinyAttn(nn.Module): # extra tiny attention
-    def __init__(self, args, n_head=2, d_attn=2):
+
+class RWKV_TinyAttn(nn.Module):  # extra tiny attention
+    def __init__(self, args, n_head=8, d_attn=8):
         super().__init__()
         self.d_attn = d_attn
         self.n_head = n_head
@@ -175,22 +200,24 @@ class RWKV_TinyAttn(nn.Module): # extra tiny attention
     def forward(self, x, mask):
         B, T, C = x.size()
         qkv = self.qkv(x)
-        q, k, v = qkv.chunk(3, dim = -1)
+        q, k, v = qkv.chunk(3, dim=-1)
 
         if self.n_head > 1:
-            q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)      # (B, T, C) -> (B, nh, T, hs)
-            k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)      # (B, T, C) -> (B, nh, T, hs)
-            v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)      # (B, T, C) -> (B, nh, T, hs)
+            q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+            k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+            v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
 
-        qk = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_size))     # (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
+        qk = (q @ k.transpose(-2, -1)) * (
+                    1.0 / math.sqrt(self.head_size))  # (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
         qk = qk.masked_fill(mask == 0, float('-inf'))
-        qk = F.softmax(qk, dim = -1)
-        qkv = qk @ v                                                           # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
+        qk = F.softmax(qk, dim=-1)
+        qkv = qk @ v  # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
 
         if self.n_head > 1:
-            qkv = qkv.transpose(1, 2).contiguous().view(B, T, -1)              # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
-       
+            qkv = qkv.transpose(1, 2).contiguous().view(B, T, -1)  # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
+
         return self.out(qkv)
+
 
 ########################################################################################################
 # MHA_rotary: Multi-head Attention + Rotary Encoding + GeGLU FFN
@@ -215,23 +242,26 @@ class RotaryEmbedding(torch.nn.Module):
             self.sin_cached = emb.sin()
         return self.cos_cached, self.sin_cached
 
+
 def rotate_half(x):
     x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), -1)
 
+
 @torch.jit.script
 def apply_rotary_pos_emb(q, k, cos, sin):
-    cos, sin = cos[...,:q.shape[-2],:], sin[...,:q.shape[-2],:]
+    cos, sin = cos[..., :q.shape[-2], :], sin[..., :q.shape[-2], :]
     return (q * cos) + (rotate_half(q) * sin), (k * cos) + (rotate_half(k) * sin)
 
+
 class MHA_rotary(nn.Module):
-    def __init__(self, args, layer_id, maxlen=200, n_head=8, n_attn=8, time_shift = False):
+    def __init__(self, args, layer_id, n_head=8, n_attn=8, time_shift=False):
         super().__init__()
         self.layer_id = layer_id
         self.n_head = n_head
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         if time_shift:
@@ -252,31 +282,33 @@ class MHA_rotary(nn.Module):
         B, T, C = x.size()
 
         if hasattr(self, 'time_shift'):
-            x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)
+            x = torch.cat([self.time_shift(x[:, :, :C // 2]), x[:, :, C // 2:]], dim=-1)
 
-        q = self.query(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)       # (B, T, C) -> (B, nh, T, hs)
-        k = self.key(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)         # (B, T, C) -> (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)       # (B, T, C) -> (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+        k = self.key(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
 
         q, query_pass = q[..., :self.rotary_ndims], q[..., self.rotary_ndims:]
         k, key_pass = k[..., :self.rotary_ndims], k[..., self.rotary_ndims:]
         cos, sin = self.rotary_emb(q, seq_len=T)
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)                                     # rotary encoding
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)  # rotary encoding
         q = torch.cat((q, query_pass), dim=-1)
         k = torch.cat((k, key_pass), dim=-1)
-        
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))                 # self-attention: (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
-        att = att.masked_fill(self.mask[:T,:T] == 0, float('-inf'))                     # causal mask
-        att = F.softmax(att, dim = -1)                                                  # softmax
 
-        x = att @ v                                                                     # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
-        x = x.transpose(1, 2).contiguous().view(B, T, -1)                               # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
+        att = (q @ k.transpose(-2, -1)) * (
+                    1.0 / math.sqrt(k.size(-1)))  # self-attention: (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
+        att = att.masked_fill(self.mask[:T, :T] == 0, float('-inf'))  # causal mask
+        att = F.softmax(att, dim=-1)  # softmax
+
+        x = att @ v  # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
+        x = x.transpose(1, 2).contiguous().view(B, T, -1)  # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
 
         x = self.output(x)
         return x
 
+
 class GeGLU(torch.nn.Module):
-    def __init__(self, args, layer_id, n_ffn=4, time_shift = False):
+    def __init__(self, args, layer_id, n_ffn=4, time_shift=False):
         super().__init__()
         self.layer_id = layer_id
 
@@ -292,26 +324,27 @@ class GeGLU(torch.nn.Module):
     def forward(self, x):
         B, T, C = x.size()
         if hasattr(self, 'time_shift'):
-            x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)
-        
+            x = torch.cat([self.time_shift(x[:, :, :C // 2]), x[:, :, C // 2:]], dim=-1)
+
         k = self.key(x)
-        v = self.value(x)        
+        v = self.value(x)
         y = self.weight(F.gelu(k) * v)
         return y
+
 
 ########################################################################################################
 # MHA_pro: with more tricks
 ########################################################################################################
 
 class MHA_pro(nn.Module):
-    def __init__(self, args, layer_id, maxlen=200, n_head=8, n_attn=8):
+    def __init__(self, args, layer_id, n_head=8, n_attn=8):
         super().__init__()
         self.layer_id = layer_id
         self.n_head = n_head
         self.n_attn = n_attn
         assert self.n_attn % self.n_head == 0
-        #  self.layer_id = layer_id
-        self.maxlen = maxlen
+        self.layer_id = layer_id
+        self.maxlen = args.maxlen
         self.head_size = self.n_attn // self.n_head
 
         self.time_w = nn.Parameter(torch.ones(self.n_head, self.maxlen))
@@ -334,36 +367,38 @@ class MHA_pro(nn.Module):
 
     def forward(self, x):
         B, T, C = x.size()
-        TT = self.ctx_len
+        TT = self.maxlen
         w = F.pad(self.time_w, (0, TT))
         w = torch.tile(w, [TT])
         w = w[:, :-TT].reshape(-1, TT, 2 * TT - 1)
-        w = w[:, :, TT-1:] # w is now a circulant matrix
+        w = w[:, :, TT - 1:]  # w is now a circulant matrix
         w = w[:, :T, :T] * self.time_alpha[:, :, :T] * self.time_beta[:, :T, :]
 
-        x = torch.cat([self.time_shift(x[:, :, :C//2]), x[:, :, C//2:]], dim = -1)      # time-shift mixing
-        q = self.query(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)       # (B, T, C) -> (B, nh, T, hs)
-        k = self.key(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)         # (B, T, C) -> (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)       # (B, T, C) -> (B, nh, T, hs)
+        x = torch.cat([self.time_shift(x[:, :, :C // 2]), x[:, :, C // 2:]], dim=-1)  # time-shift mixing
+        q = self.query(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+        k = self.key(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, T, C) -> (B, nh, T, hs)
 
         q, query_pass = q[..., :self.rotary_ndims], q[..., self.rotary_ndims:]
         k, key_pass = k[..., :self.rotary_ndims], k[..., self.rotary_ndims:]
         cos, sin = self.rotary_emb(q, seq_len=T)
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)                                     # rotary encoding
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)  # rotary encoding
         q = torch.cat((q, query_pass), dim=-1)
-        k = torch.cat((k, key_pass), dim=-1)  
-        
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))                 # self-attention: (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
-        att = att.masked_fill(self.mask[:T,:T] == 0, float('-inf'))                     # causal mask
-        att = F.softmax(att, dim = -1)                                                  # softmax
-        att = att * w                                                                   # time-weighting
-        att = self.head_mix(att)                                                        # talking heads
+        k = torch.cat((k, key_pass), dim=-1)
 
-        x = att @ v                                                                     # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
-        x = x.transpose(1, 2).contiguous().view(B, T, -1)                               # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
+        att = (q @ k.transpose(-2, -1)) * (
+                    1.0 / math.sqrt(k.size(-1)))  # self-attention: (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)
+        att = att.masked_fill(self.mask[:T, :T] == 0, float('-inf'))  # causal mask
+        att = F.softmax(att, dim=-1)  # softmax
+        att = att * w  # time-weighting
+        att = self.head_mix(att)  # talking heads
+
+        x = att @ v  # (B, nh, T, T) * (B, nh, T, hs) -> (B, nh, T, hs)
+        x = x.transpose(1, 2).contiguous().view(B, T, -1)  # (B, nh, T, hs) -> (B, T, nh, hs) -> (B, T, C)
 
         x = self.output(x) * self.time_gamma[:T, :]
         return x
+
 
 ########################################################################################################
 # The GPT Model with our blocks
@@ -380,6 +415,7 @@ class RMSNorm(nn.Module):
         x_normed = x / (norm_x * self.dd + 1e-12)
         return self.weight * x_normed
 
+
 class FixedNorm(nn.Module):
     def __init__(self, d):
         super().__init__()
@@ -390,14 +426,8 @@ class FixedNorm(nn.Module):
         x_normed = x / (norm_x * self.dd + 1e-12)
         return x_normed
 
-########################################################################################################
 
-class GPTConfig:
-    def __init__(self, vocab_size, ctx_len, **kwargs):
-        self.vocab_size = vocab_size
-        self.ctx_len = ctx_len
-        for k,v in kwargs.items():
-            setattr(self, k, v)
+########################################################################################################
 
 class Block(nn.Module):
     def __init__(self, args, layer_id, model_type):
@@ -416,11 +446,11 @@ class Block(nn.Module):
         elif model_type == 'MHA_rotary':
             self.attn = MHA_rotary(args, layer_id)
             self.mlp = GeGLU(args, layer_id)
-        
+
         elif model_type == 'MHA_shift':
             self.attn = MHA_rotary(args, layer_id, time_shift=True)
             self.mlp = GeGLU(args, layer_id, time_shift=True)
-        
+
         elif model_type == 'MHA_pro':
             self.attn = MHA_pro(args, layer_id)
             self.mlp = RWKV_ChannelMix(args, layer_id)
@@ -429,21 +459,19 @@ class Block(nn.Module):
 
         x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
-        
+
         return x
+
 
 class GPT(nn.Module):
     def __init__(self,
                  user_num,
                  item_num,
                  args,
-                 maxlen=300,
                  n_layer=12,
                  model_type="RWKV",
-                 n_head=4,
+                 n_head=8,
                  n_attn=8,
-                 n_ffn=4,
-                 rwkv_emb_scale=4
                  ):
         super().__init__()
 
@@ -452,13 +480,12 @@ class GPT(nn.Module):
         self.dev = args.device
         self.item_emb = nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
 
-        self.maxlen = maxlen
+        self.maxlen = args.maxlen
         self.n_layer = n_layer
         self.model_type = model_type
         self.n_head = n_head
         self.n_attn = n_attn
-        self.n_ffn = n_ffn
-        self.rwkv_emb_scale = rwkv_emb_scale
+        self.rwkv_emb_scale = args.rwkv_emb_scale
 
         self.blocks = nn.Sequential(*[Block(args, i, self.model_type) for i in range(self.n_layer)])
 
@@ -473,14 +500,11 @@ class GPT(nn.Module):
         self.register_buffer("copy_mask", torch.tril(torch.ones(args.hidden_units, args.hidden_units)))
 
         if self.model_type == 'RWKV':
-            RWKV_Init(self, self.item_num, args, self.rwkv_emb_scale)
+            RWKV_Init(self, self.item_num, args)
         else:
             self.apply(self._init_weights)
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
-
-    def get_ctx_len(self):
-        return self.ctx_len
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -488,50 +512,16 @@ class GPT(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def configure_optimizers(self, train_config):
-        # separate out all parameters to those that will and won't experience regularizing weight decay
-        decay = set()
-        no_decay = set()
-
-        whitelist_weight_modules = (nn.Linear, )
-        blacklist_weight_modules = (RMSNorm, nn.LayerNorm, nn.Embedding)
-        for mn, m in self.named_modules():
-            for pn, p in m.named_parameters():
-                fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
-
-                if pn.endswith('bias') or ('time' in fpn) or ('head' in fpn):
-                    no_decay.add(fpn)
-                elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
-                    decay.add(fpn)
-                elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
-                    no_decay.add(fpn)
-
-        # validate that we considered every parameter
-        param_dict = {pn: p for pn, p in self.named_parameters()}
-        inter_params = decay & no_decay
-        union_params = decay | no_decay
-        assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
-        assert len(param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
-                                                    % (str(param_dict.keys() - union_params), )
-
-        optim_groups = [
-            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": train_config.weight_decay},
-            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
-        ]
-        optimizer = torch.optim.AdamW(optim_groups, lr=train_config.learning_rate, betas=train_config.betas, eps=train_config.eps)
-        return optimizer
-
     def GPT(self, log_seqs):
         x = self.item_emb(torch.LongTensor(log_seqs).to(self.dev))  # [128, 200, 100]
         B, T, C = x.size()
-        # assert T <= self.ctx_len, "Cannot forward, because len(input) > model ctx_len."
 
         x = self.blocks(x)
 
         x = self.ln_f(x)
 
-        q = self.head_q(x)[:,:T,:]
-        k = self.head_k(x)[:,:T,:]
+        q = self.head_q(x)[:, :T, :]
+        k = self.head_k(x)[:, :T, :]
         c = (q @ k.transpose(-2, -1)) * (1.0 / 256)
 
         # mask
@@ -543,8 +533,8 @@ class GPT(nn.Module):
         # print("C shape :{}.".format(c.shape))
         # c = c @ F.one_hot(idx, num_classes = self.config.vocab_size).float()
 
-        x = x * self.time_out[:, :T, :] # reduce confidence of early tokens
-        #x = self.head(x) + c #[Batch,seq,768]
+        x = x * self.time_out[:, :T, :]  # reduce confidence of early tokens
+        # x = self.head(x) + c #[Batch,seq,768]
         x = x * self.time_out[:, :T, :]  # reduce confidence of early tokens
         # x = self.head(x) + c #[Batch,seq,768]
 

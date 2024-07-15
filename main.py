@@ -1,11 +1,8 @@
-import os
 import time
-import torch
 import argparse
-
-from model import SASRec
+import os
 from models.RWKV.GPT_Rec import *
-from models.PerceiverAR.Per_Rec import *
+from model import *
 from utils import *
 
 def str2bool(s):
@@ -18,14 +15,14 @@ parser.add_argument('--dataset', required=True)
 parser.add_argument('--train_dir', required=True)
 parser.add_argument('--batch_size', default=128, type=int)
 parser.add_argument('--lr', default=0.001, type=float)
-parser.add_argument('--maxlen', default=200, type=int)
-parser.add_argument('--hidden_units', default=64, type=int)
+parser.add_argument('--maxlen', default=50, type=int)
+parser.add_argument('--hidden_units', default=128, type=int)
 parser.add_argument('--num_blocks', default=2, type=int)
 parser.add_argument('--num_epochs', default=201, type=int)
-parser.add_argument('--num_heads', default=1, type=int)
+parser.add_argument('--num_heads', default=8, type=int)
 parser.add_argument('--dropout_rate', default=0.2, type=float)
 parser.add_argument('--l2_emb', default=0.0, type=float)
-parser.add_argument('--device', default='cpu', type=str)
+parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
 
@@ -53,8 +50,9 @@ if __name__ == '__main__':
     f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
     
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
-    model = PerceiverAR(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
-    
+    # model = GPT(usernum, itemnum, args).cuda()
+    model = GPT(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
+
     for name, param in model.named_parameters():
         try:
             torch.nn.init.xavier_normal_(param.data)
@@ -106,6 +104,9 @@ if __name__ == '__main__':
             indices = np.where(pos != 0)
             loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            # margin_loss = nn.MarginRankingLoss()(pos_logits, neg_logits,torch.ones(pos_logits.shape, device=args.device))
+            margin_loss = nn.MarginRankingLoss()(pos_logits, neg_logits,0.3)
+            loss += margin_loss
             for param in model.item_emb.parameters(): loss += args.l2_emb * torch.norm(param)
             loss.backward()
             adam_optimizer.step()
@@ -128,7 +129,7 @@ if __name__ == '__main__':
     
         if epoch == args.num_epochs:
             folder = args.dataset + '_' + args.train_dir
-            fname = 'PerceiverAR.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
+            fname = 'GPT.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
             fname = fname.format(args.num_epochs, args.lr, args.num_blocks, args.num_heads, args.hidden_units, args.maxlen)
             torch.save(model.state_dict(), os.path.join(folder, fname))
     
