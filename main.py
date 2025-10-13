@@ -2,7 +2,6 @@ import time
 import argparse
 import os
 from models.RWKV4Rec import *
-from models.baseline.BERT4Rec import *
 from utils import *
 
 def str2bool(s):
@@ -59,7 +58,7 @@ if __name__ == '__main__':
     f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
 
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
-    model = RWKV4Rec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
+    model = RWKV4Rec(usernum, itemnum, args).to(args.device) 
     # model.build_graph_from_sequences(user_train)
 
     #计算并打印模型参数量
@@ -142,7 +141,7 @@ if __name__ == '__main__':
 
         if epoch == args.num_epochs:
             folder = args.dataset + '_' + args.train_dir
-            fname = 'GPT.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
+            fname = 'RWKV4Rec.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
             fname = fname.format(args.num_epochs, args.lr, args.num_blocks, args.num_heads, args.hidden_units, args.maxlen)
             torch.save(model.state_dict(), os.path.join(folder, fname))
 
