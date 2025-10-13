@@ -105,21 +105,22 @@ def data_partition(fname):
     return [user_train, user_valid, user_test, usernum, itemnum]
 
 # TODO: merge evaluate functions for test and val set
-# evaluate on test set
 def evaluate(model, dataset, args):
     [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
 
     NDCG = 0.0
     HT = 0.0
+    MRR = 0.0
     valid_user = 0.0
 
-    if usernum>10000:
+    if usernum > 10000:
         users = random.sample(range(1, usernum + 1), 10000)
     else:
         users = range(1, usernum + 1)
-    for u in users:
 
-        if len(train[u]) < 1 or len(test[u]) < 1: continue
+    for u in users:
+        if len(train[u]) < 1 or len(test[u]) < 1:
+            continue
 
         seq = np.zeros([args.maxlen], dtype=np.int32)
         idx = args.maxlen - 1
@@ -128,30 +129,40 @@ def evaluate(model, dataset, args):
         for i in reversed(train[u]):
             seq[idx] = i
             idx -= 1
-            if idx == -1: break
+            if idx == -1:
+                break
+
         rated = set(train[u])
         rated.add(0)
         item_idx = [test[u][0]]
         for _ in range(100):
             t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
+            while t in rated:
+                t = np.random.randint(1, itemnum + 1)
             item_idx.append(t)
 
         predictions = -model.predict(*[np.array(l) for l in [[u], [seq], item_idx]])
-        predictions = predictions[0] # - for 1st argsort DESC
+        predictions = predictions[0]  # - for 1st argsort DESC
 
         rank = predictions.argsort().argsort()[0].item()
 
         valid_user += 1
 
+        # 计算各个指标
         if rank < 10:
             NDCG += 1 / np.log2(rank + 2)
-            HT += 1
+            HT += 1 # 在topk中命中了目标项目
+
+        # 计算MRR (Mean Reciprocal Rank)
+        if rank < 10:
+            MRR += 1 / (rank + 1)
+
         if valid_user % 100 == 0:
             print('.', end="")
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    # 返回所有指标
+    return NDCG / valid_user, HT / valid_user, MRR / valid_user
 
 
 # evaluate on val set
@@ -161,26 +172,32 @@ def evaluate_valid(model, dataset, args):
     NDCG = 0.0
     valid_user = 0.0
     HT = 0.0
-    if usernum>10000:
+    MRR = 0.0
+
+    if usernum > 10000:
         users = random.sample(range(1, usernum + 1), 10000)
     else:
         users = range(1, usernum + 1)
+
     for u in users:
-        if len(train[u]) < 1 or len(valid[u]) < 1: continue
+        if len(train[u]) < 1 or len(valid[u]) < 1:
+            continue
 
         seq = np.zeros([args.maxlen], dtype=np.int32)
         idx = args.maxlen - 1
         for i in reversed(train[u]):
             seq[idx] = i
             idx -= 1
-            if idx == -1: break
+            if idx == -1:
+                break
 
         rated = set(train[u])
         rated.add(0)
         item_idx = [valid[u][0]]
         for _ in range(100):
             t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
+            while t in rated:
+                t = np.random.randint(1, itemnum + 1)
             item_idx.append(t)
 
         predictions = -model.predict(*[np.array(l) for l in [[u], [seq], item_idx]])
@@ -190,11 +207,18 @@ def evaluate_valid(model, dataset, args):
 
         valid_user += 1
 
+        # 计算各个指标
         if rank < 10:
             NDCG += 1 / np.log2(rank + 2)
-            HT += 1
+            HT += 1 # 在topk中命中了目标项目
+
+        # 计算MRR (Mean Reciprocal Rank)
+        if rank < 10:
+            MRR += 1 / (rank + 1)
+
         if valid_user % 100 == 0:
             print('.', end="")
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    # 返回所有指标
+    return NDCG / valid_user, HT / valid_user, MRR / valid_user
