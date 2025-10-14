@@ -58,8 +58,9 @@ if __name__ == '__main__':
     f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
 
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
-    model = RWKV4Rec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
 
+    model = RWKV4Rec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
+    # model.build_graph_from_sequences(user_train)
 
     # Calculate and print model parameter count
     total_params = sum(p.numel() for p in model.parameters())
