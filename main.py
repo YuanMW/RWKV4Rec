@@ -2,7 +2,6 @@ import time
 import argparse
 import os
 from models.RWKV4Rec import *
-from models.baseline.BERT4Rec import *
 from utils import *
 
 def str2bool(s):
@@ -45,7 +44,7 @@ with open(os.path.join(args.dataset + '_' + args.train_dir, 'args.txt'), 'w') as
 f.close()
 
 if __name__ == '__main__':
-    # global dataset
+    # Global dataset
     dataset = data_partition(args.dataset)
 
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
@@ -60,9 +59,9 @@ if __name__ == '__main__':
 
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
     model = RWKV4Rec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
-    # model.build_graph_from_sequences(user_train)
 
-    #计算并打印模型参数量
+
+    # Calculate and print model parameter count
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
@@ -106,7 +105,7 @@ if __name__ == '__main__':
     t0 = time.time()
 
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
-        if args.inference_only: break # just to decrease identition
+        if args.inference_only: break # just to decrease indentation
         for step in range(num_batch): # tqdm(range(num_batch), total=num_batch, ncols=70, leave=False, unit='b'):
             u, seq, pos, neg = sampler.next_batch() # tuples to ndarray
             u, seq, pos, neg = np.array(u), np.array(seq), np.array(pos), np.array(neg)
@@ -142,7 +141,7 @@ if __name__ == '__main__':
 
         if epoch == args.num_epochs:
             folder = args.dataset + '_' + args.train_dir
-            fname = 'GPT.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
+            fname = 'RWKV4Rec.epoch={}.lr={}.layer={}.head={}.hidden={}.maxlen={}.pth'
             fname = fname.format(args.num_epochs, args.lr, args.num_blocks, args.num_heads, args.hidden_units, args.maxlen)
             torch.save(model.state_dict(), os.path.join(folder, fname))
 

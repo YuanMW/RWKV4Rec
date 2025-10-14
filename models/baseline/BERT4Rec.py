@@ -7,7 +7,7 @@ from typing import Optional, Tuple, List
 
 
 class BertConfig:
-    """BERT模型配置"""
+    """Configuration for BERT model"""
 
     def __init__(self,
                  vocab_size,
@@ -35,12 +35,12 @@ class BertConfig:
 
 
 def gelu(x):
-    """GELU激活函数"""
+    """GELU activation function"""
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 
 def get_activation(activation_string):
-    """获取激活函数"""
+    """Get activation function"""
     if not isinstance(activation_string, str):
         return activation_string
 
@@ -58,7 +58,7 @@ def get_activation(activation_string):
 
 
 class BertEmbeddings(nn.Module):
-    """BERT嵌入层"""
+    """BERT embedding layer"""
 
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
@@ -90,7 +90,7 @@ class BertEmbeddings(nn.Module):
 
 
 class BertSelfAttention(nn.Module):
-    """BERT自注意力层"""
+    """BERT self-attention layer"""
 
     def __init__(self, config):
         super(BertSelfAttention, self).__init__()
@@ -123,14 +123,14 @@ class BertSelfAttention(nn.Module):
         key_layer = self.transpose_for_scores(mixed_key_layer)
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
-        # 计算注意力分数
+        # Compute attention scores
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
         if attention_mask is not None:
             attention_scores = attention_scores + attention_mask
 
-        # 注意力概率
+        # Attention probabilities
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
         attention_probs = self.dropout(attention_probs)
 
@@ -143,7 +143,7 @@ class BertSelfAttention(nn.Module):
 
 
 class BertSelfOutput(nn.Module):
-    """BERT自注意力输出层"""
+    """BERT self-attention output layer"""
 
     def __init__(self, config):
         super(BertSelfOutput, self).__init__()
@@ -159,7 +159,7 @@ class BertSelfOutput(nn.Module):
 
 
 class BertAttention(nn.Module):
-    """BERT注意力模块"""
+    """BERT attention module"""
 
     def __init__(self, config):
         super(BertAttention, self).__init__()
@@ -173,7 +173,7 @@ class BertAttention(nn.Module):
 
 
 class BertIntermediate(nn.Module):
-    """BERT中间层"""
+    """BERT intermediate layer"""
 
     def __init__(self, config):
         super(BertIntermediate, self).__init__()
@@ -191,7 +191,7 @@ class BertIntermediate(nn.Module):
 
 
 class BertOutput(nn.Module):
-    """BERT输出层"""
+    """BERT output layer"""
 
     def __init__(self, config):
         super(BertOutput, self).__init__()
@@ -207,7 +207,7 @@ class BertOutput(nn.Module):
 
 
 class BertLayer(nn.Module):
-    """BERT层"""
+    """BERT layer"""
 
     def __init__(self, config):
         super(BertLayer, self).__init__()
@@ -223,7 +223,7 @@ class BertLayer(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    """BERT编码器"""
+    """BERT encoder"""
 
     def __init__(self, config):
         super(BertEncoder, self).__init__()
@@ -241,7 +241,7 @@ class BertEncoder(nn.Module):
 
 
 class BERT4Rec(nn.Module):
-    """BERT4Rec模型 - 适配推荐系统"""
+    """BERT4Rec model - adapted for recommendation systems"""
 
     def __init__(self, user_num, item_num, args):
         super(BERT4Rec, self).__init__()
@@ -250,13 +250,13 @@ class BERT4Rec(nn.Module):
         self.item_num = item_num
         self.device = args.device
 
-        # BERT配置
+        # BERT configuration
         config = BertConfig(
             vocab_size=item_num + 1,  # +1 for padding token (0)
             hidden_size=args.hidden_units,
             num_hidden_layers=args.num_blocks,
             num_attention_heads=args.num_heads,
-            intermediate_size=args.hidden_units * 4,  # 通常为hidden_size的4倍
+            intermediate_size=args.hidden_units * 4,  # Typically 4x hidden_size
             hidden_act=args.hidden_act,
             hidden_dropout_prob=args.dropout_rate,
             attention_probs_dropout_prob=args.attention_probs_dropout_prob,
@@ -267,17 +267,17 @@ class BERT4Rec(nn.Module):
 
         self.bert_config = config
 
-        # 为了兼容现有代码，保留item_emb属性
+        # Keep item_emb for compatibility with existing code
         self.item_emb = nn.Embedding(item_num + 1, args.hidden_units, padding_idx=0)
         self.pos_emb = nn.Embedding(config.max_position_embeddings, config.hidden_size)
 
         self.embeddings = BertEmbeddings(config)
-        # 使用item_emb作为word_embeddings
+        # Use item_emb as word_embeddings
         self.embeddings.word_embeddings = self.item_emb
 
         self.encoder = BertEncoder(config)
 
-        # 项目预测头
+        # Item prediction head
         self.transform = nn.Linear(config.hidden_size, config.hidden_size)
         if isinstance(config.hidden_act, str):
             self.activation = get_activation(config.hidden_act)
@@ -288,7 +288,7 @@ class BERT4Rec(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """初始化权重"""
+        """Initialize weights"""
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=self.bert_config.initializer_range)
         elif isinstance(module, nn.LayerNorm):
@@ -298,55 +298,55 @@ class BERT4Rec(nn.Module):
             module.bias.data.zero_()
 
     def create_attention_mask(self, seq):
-        """创建注意力mask"""
-        # 创建padding mask [batch_size, 1, 1, seq_length]
+        """Create attention mask"""
+        # Create padding mask [batch_size, 1, 1, seq_length]
         attention_mask = (seq > 0).unsqueeze(1).unsqueeze(2)
         attention_mask = attention_mask.float()
         attention_mask = (1.0 - attention_mask) * -10000.0
         return attention_mask
 
     def log2feats(self, log_seqs):
-        """序列到特征转换 - 类似SASRec的接口"""
+        """Sequence to feature conversion - similar to SASRec interface"""
         input_ids = torch.LongTensor(log_seqs).to(self.device)
 
-        # 创建注意力mask
+        # Create attention mask
         attention_mask = self.create_attention_mask(input_ids)
 
-        # BERT前向传播
+        # BERT forward pass
         embedding_output = self.embeddings(input_ids)
         encoded_layers = self.encoder(embedding_output, attention_mask, output_all_encoded_layers=False)
-        sequence_output = encoded_layers[-1]  # 最后一层输出
+        sequence_output = encoded_layers[-1]  # Last layer output
 
         return sequence_output
 
     def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs):
-        """训练前向传播"""
+        """Training forward pass"""
         log_feats = self.log2feats(log_seqs)
 
-        # 获取正负样本的嵌入
+        # Get embeddings for positive and negative samples
         pos_embs = self.item_emb(torch.LongTensor(pos_seqs).to(self.device))
         neg_embs = self.item_emb(torch.LongTensor(neg_seqs).to(self.device))
 
-        # 使用最后一个隐藏状态进行预测
+        # Use last hidden state for prediction
         final_output = log_feats[:, -1, :]  # [batch_size, hidden_size]
 
-        # 计算logits
+        # Compute logits
         pos_logits = (final_output.unsqueeze(1) * pos_embs).sum(dim=-1)  # [batch_size, seq_len]
         neg_logits = (final_output.unsqueeze(1) * neg_embs).sum(dim=-1)  # [batch_size, seq_len]
 
         return pos_logits, neg_logits
 
     def predict(self, user_ids, log_seqs, item_indices):
-        """推理前向传播"""
+        """Inference forward pass"""
         log_feats = self.log2feats(log_seqs)
 
-        # 使用最后一个隐藏状态
+        # Use last hidden state
         final_output = log_feats[:, -1, :]  # [batch_size, hidden_size]
 
-        # 获取候选项目的嵌入
+        # Get candidate item embeddings
         item_embs = self.item_emb(torch.LongTensor(item_indices).to(self.device))
 
-        # 计算logits
+        # Compute logits
         logits = torch.matmul(item_embs, final_output.unsqueeze(-1)).squeeze(-1)
 
         return logits

@@ -56,24 +56,24 @@ def RWKV_Init(module, item_num, args):  # fancy initialization of all lin & emb 
 class LoRALayer(nn.Module):
     def __init__(self, original_layer, rank, alpha=1.0):
         super(LoRALayer, self).__init__()
-        self.original_layer = original_layer  # 原始线性层
+        self.original_layer = original_layer  # original linear layer
         self.rank = rank
         self.alpha = alpha
 
-        # 获取原始层的权重和偏置
+        # Get original layer weights and biases
         self.original_weight = original_layer.weight
         self.original_bias = original_layer.bias
 
-        # LoRA的低秩矩阵
+        # LoRA low-rank matrices
         self.A = nn.Parameter(torch.randn(original_layer.weight.size(0), rank))
         self.B = nn.Parameter(torch.zeros(rank, original_layer.weight.size(1)))
 
     def forward(self, x):
-        # 原始层的输出
+        # Original layer output
         original_output = F.linear(x, self.original_weight, self.original_bias)
 
-        # LoRA的低秩更新
-        lora_update = self.alpha * (x @ self.A.T @ self.B.T)  # 低秩更新
+        # LoRA low-rank update
+        lora_update = self.alpha * (x @ self.A.T @ self.B.T)  # low-rank update
         return original_output + lora_update
 
 class RWKV_TimeMix(nn.Module):
@@ -81,8 +81,8 @@ class RWKV_TimeMix(nn.Module):
         super().__init__()
         self.layer_id = layer_id
         self.n_layer = n_layer
-        self.use_lora = False  # 新增布尔参数控制是否使用LoRA
-        self.lora_rank = args.lora_rank if self.use_lora else 0  # 只有使用LoRA时才设置rank
+        self.use_lora = False  # new boolean parameter to control whether to use LoRA
+        self.lora_rank = args.lora_rank if self.use_lora else 0  # only set rank when using LoRA
 
         self.n_head = n_head
         self.n_attn = n_attn
@@ -121,12 +121,12 @@ class RWKV_TimeMix(nn.Module):
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
         if self.use_lora:
-            # LoRA模式：直接创建带LoRA的线性层
+            # LoRA mode: directly create linear layers with LoRA
             self.key = LoRALayer(nn.Linear(args.hidden_units, self.n_attn), self.lora_rank)
             self.value = LoRALayer(nn.Linear(args.hidden_units, self.n_attn), self.lora_rank)
             self.receptance = LoRALayer(nn.Linear(args.hidden_units, self.n_attn), self.lora_rank)
         else:
-            # 非LoRA模式：直接使用原生线性层
+            # Non-LoRA mode: directly use native linear layers
             self.key = nn.Linear(args.hidden_units, self.n_attn)
             self.value = nn.Linear(args.hidden_units, self.n_attn)
             self.receptance = nn.Linear(args.hidden_units, self.n_attn)
@@ -274,7 +274,7 @@ class Block(nn.Module):
 
         self.ln1 = nn.LayerNorm(args.hidden_units)
         self.ln2 = nn.LayerNorm(args.hidden_units)
-        # self.ln_extra_attn = nn.LayerNorm(args.hidden_units)  # 新增的LayerNorm层
+        # self.ln_extra_attn = nn.LayerNorm(args.hidden_units)  # newly added LayerNorm layer
         # self.ln1 = RMSNorm(args.hidden_units)
         # self.ln2 = RMSNorm(args.hidden_units)
 
@@ -284,7 +284,7 @@ class Block(nn.Module):
         if model_type == 'RWKV':
             # self.attn = RWKV_TimeMix(args, layer_id)
             self.mlp = RWKV_ChannelMix(args, layer_id)
-            self.attn = RWKV_ExtraAttn(args)  # 新增的注意力层
+            self.attn = RWKV_ExtraAttn(args)  # newly added attention layer
 
 
     def forward(self, x):
@@ -349,7 +349,7 @@ class RWKV4Rec(nn.Module):
     def GPT(self, log_seqs):
         x = self.item_emb(torch.LongTensor(log_seqs).to(self.dev))  # [128, 200, 100]
 
-        # 添加用户信息
+        # Add user information
         # use_info = self.user_emb(torch.LongTensor(user_ids).unsqueeze(1).to(self.dev))
         # x += use_info
 
@@ -365,7 +365,7 @@ class RWKV4Rec(nn.Module):
 
         # mask
         mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
-        mask = mask.unsqueeze(1).expand(B, T, T)  # 扩展维度以便与qk维度匹配 (B, T, T)
+        mask = mask.unsqueeze(1).expand(B, T, T)  # expand dimensions to match qk dimensions (B, T, T)
         c = c.masked_fill(mask, float('-inf'))
 
         # c = c.masked_fill(self.copy_mask[:T,:T] == 0, 0)

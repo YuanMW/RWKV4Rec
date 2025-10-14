@@ -20,7 +20,7 @@ class MAERec(nn.Module):
         self.masker = RandomMaskSubgraphs()
         self.sampler = LocalGraph()
 
-        # Sequential Components (与SASRec保持一致)
+        # Sequential Components (consistent with SASRec)
         self.item_emb = nn.Embedding(item_num + 1, args.hidden_units, padding_idx=0)
         self.pos_emb = nn.Embedding(args.maxlen, args.hidden_units)
         self.emb_dropout = nn.Dropout(p=args.dropout_rate)
@@ -48,7 +48,7 @@ class MAERec(nn.Module):
 
         self.last_layernorm = nn.LayerNorm(args.hidden_units, eps=1e-8)
 
-        # 初始化权重
+        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -60,7 +60,7 @@ class MAERec(nn.Module):
             nn.init.xavier_uniform_(module.weight)
 
     def build_graph_from_sequences(self, user_train):
-        """从用户序列构建物品-物品图"""
+        """Build item-item graph from user sequences"""
         rows, cols = [], []
         data = []
 
@@ -68,35 +68,35 @@ class MAERec(nn.Module):
 
         for u in user_train:
             items = user_train[u]
-            # 为每个用户的序列创建物品对
+            # Create item pairs for each user's sequence
             for i in range(len(items)):
-                # 连接序列中的后续物品
+                # Connect subsequent items in the sequence
                 neighbors = range(i + 1, min(i + 1 + max_neighbors, len(items)))
                 for j in neighbors:
                     if items[i] <= self.item_num and items[j] <= self.item_num:
                         rows.append(items[i])
                         cols.append(items[j])
                         data.append(1.0)
-                        # 双向连接
+                        # Bidirectional connection
                         rows.append(items[j])
                         cols.append(items[i])
                         data.append(1.0)
 
-        if not rows:  # 如果没有边，创建自环
+        if not rows:  # If no edges, create self-loops
             rows = list(range(1, min(self.item_num + 1, 100)))
             cols = list(range(1, min(self.item_num + 1, 100)))
             data = [1.0] * len(rows)
 
-        # 创建稀疏矩阵
+        # Create sparse matrix
         mat = coo_matrix((data, (rows, cols)),
                          shape=(self.item_num + 1, self.item_num + 1))
 
-        # 构建图结构
+        # Build graph structure
         self.ii_adj = self._make_torch_adj(mat)
         self.ii_adj_all_one = self._make_all_one_adj(self.ii_adj)
 
     def _make_torch_adj(self, mat):
-        # 添加自环
+        # Add self-loops
         mat = (mat + sp.eye(mat.shape[0]))
         mat = (mat != 0) * 1.0
         mat = self._normalize(mat)
@@ -119,30 +119,30 @@ class MAERec(nn.Module):
         return mat.dot(dInvSqrtMat).transpose().dot(dInvSqrtMat).tocoo()
 
     def log2feats(self, log_seqs):
-        # 确保输入是LongTensor
+        # Ensure input is LongTensor
         if isinstance(log_seqs, np.ndarray):
             log_seqs = t.LongTensor(log_seqs).to(self.dev)
 
         seqs = self.item_emb(log_seqs)
         seqs *= self.item_emb.embedding_dim ** 0.5
 
-        # 位置编码
+        # Position encoding
         positions = t.arange(log_seqs.size(1), dtype=t.long, device=self.dev)
         positions = positions.unsqueeze(0).expand_as(log_seqs)
         seqs += self.pos_emb(positions)
         seqs = self.emb_dropout(seqs)
 
-        # 掩码处理
+        # Mask processing
         timeline_mask = (log_seqs == 0)
         seqs = seqs * (~timeline_mask.unsqueeze(-1))
 
-        # 因果注意力掩码
+        # Causal attention mask
         tl = seqs.shape[1]
         attention_mask = ~t.tril(t.ones((tl, tl), dtype=t.bool, device=self.dev))
 
-        # Transformer层
+        # Transformer layers
         for i in range(len(self.attention_layers)):
-            # 自注意力层
+            # Self-attention layer
             Q = self.attention_layernorms[i](seqs)
             mha_outputs, _ = self.attention_layers[i](
                 Q, Q, Q,
@@ -151,7 +151,7 @@ class MAERec(nn.Module):
             )
             seqs = Q + mha_outputs
 
-            # 前馈层
+            # Feed-forward layer
             seqs = self.forward_layernorms[i](seqs)
             seqs = self.forward_layers[i](seqs)
             seqs = seqs * (~timeline_mask.unsqueeze(-1))
@@ -160,11 +160,11 @@ class MAERec(nn.Module):
         return log_feats
 
     def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs):
-        # 确保图结构已构建
+        # Ensure graph structure is built
         if not hasattr(self, 'ii_adj'):
             raise RuntimeError("Please call build_graph_from_sequences() before training")
 
-        # 转换输入为张量
+        # Convert inputs to tensors
         if isinstance(log_seqs, np.ndarray):
             log_seqs = t.LongTensor(log_seqs).to(self.dev)
         if isinstance(pos_seqs, np.ndarray):
@@ -172,7 +172,7 @@ class MAERec(nn.Module):
         if isinstance(neg_seqs, np.ndarray):
             neg_seqs = t.LongTensor(neg_seqs).to(self.dev)
 
-        # Graph Encoding (仅在训练时使用掩码)
+        # Graph Encoding (only use masking during training)
         if self.training and hasattr(self.args, 'mask_depth') and self.args.mask_depth > 0:
             sample_scr, candidates = self.sampler(
                 self.ii_adj_all_one, self.encoder.get_ego_embeds(), self.args
@@ -185,7 +185,7 @@ class MAERec(nn.Module):
         # Sequential Processing
         log_feats = self.log2feats(log_seqs)
 
-        # 计算正负样本分数
+        # Calculate positive and negative sample scores
         pos_embs = self.item_emb(pos_seqs)
         neg_embs = self.item_emb(neg_seqs)
 
@@ -198,20 +198,20 @@ class MAERec(nn.Module):
         if not hasattr(self, 'ii_adj'):
             raise RuntimeError("Please call build_graph_from_sequences() before prediction")
 
-        # 转换输入
+        # Convert inputs
         if isinstance(log_seqs, np.ndarray):
             log_seqs = t.LongTensor(log_seqs).to(self.dev)
         if isinstance(item_indices, np.ndarray):
             item_indices = t.LongTensor(item_indices).to(self.dev)
 
-        # Graph Encoding (推理时不使用掩码)
+        # Graph Encoding (no masking during inference)
         item_emb, _ = self.encoder(self.ii_adj)
 
         # Sequential Processing
         log_feats = self.log2feats(log_seqs)
-        final_feat = log_feats[:, -1, :]  # 使用最后一个位置进行预测
+        final_feat = log_feats[:, -1, :]  # Use last position for prediction
 
-        # 计算所有候选物品的分数
+        # Calculate scores for all candidate items
         item_embs = self.item_emb(item_indices)
         logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1)
 
@@ -239,11 +239,11 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.item_num = item_num
         self.args = args
-        self.num_gcn_layers = 2  # 固定GCN层数
+        self.num_gcn_layers = 2  # Fixed number of GCN layers
         self.item_emb = nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
         self.gcn_layers = nn.ModuleList([GCNLayer() for _ in range(self.num_gcn_layers)])
 
-        # 初始化嵌入权重
+        # Initialize embedding weights
         nn.init.xavier_uniform_(self.item_emb.weight)
 
     def get_ego_embeds(self):
@@ -284,7 +284,7 @@ class Decoder(nn.Module):
         pos_scr = t.squeeze(self.MLP(pos_emb))
         neg_scr = t.squeeze(self.MLP(neg_emb))
 
-        # 使用softmax计算损失
+        # Use softmax to calculate loss
         logits = t.cat([pos_scr.unsqueeze(1), neg_scr], dim=1)
         labels = t.zeros(logits.shape[0], dtype=t.long).to(logits.device)
         loss = F.cross_entropy(logits, labels)
@@ -307,7 +307,7 @@ class GCNLayer(nn.Module):
 
 
 def sparse_dropout(x, keep_prob):
-    """对稀疏张量进行dropout操作"""
+    """Apply dropout operation to sparse tensor"""
     if keep_prob == 1.0:
         return x
     msk = (t.rand(x._values().size()) < keep_prob).to(x.device)
@@ -390,7 +390,7 @@ class RandomMaskSubgraphs(nn.Module):
             masked_rows.extend(nxtRows.cpu().tolist())
             masked_cols.extend(nxtCols.cpu().tolist())
 
-            # 更新剩余的边
+            # Update remaining edges
             remaining_mask = ~idct
             rows = rows[remaining_mask]
             cols = cols[remaining_mask]
@@ -402,7 +402,7 @@ class RandomMaskSubgraphs(nn.Module):
                 keep_num = int(nxtSeeds.shape[0] * getattr(args, 'path_prob', 0.5) ** (i + 1))
                 nxtSeeds = nxtSeeds[cand[:keep_num]]
 
-        # 构建掩码后的邻接矩阵
+        # Build masked adjacency matrix
         if len(rows) > 0:
             encoder_adj = self.normalize(
                 t.sparse.FloatTensor(
@@ -412,7 +412,7 @@ class RandomMaskSubgraphs(nn.Module):
                 ).to(adj.device)
             )
         else:
-            # 如果所有边都被掩码，返回原始邻接矩阵
+            # If all edges are masked, return original adjacency matrix
             encoder_adj = adj
 
         return encoder_adj, (masked_rows, masked_cols)

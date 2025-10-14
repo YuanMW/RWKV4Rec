@@ -15,7 +15,7 @@ class CL4SRec(nn.Module):
         self.n_layers = args.num_blocks
         self.n_heads = args.num_heads
         self.hidden_size = args.hidden_units
-        self.inner_size = args.hidden_units * 4  # 通常为hidden_size的4倍
+        self.inner_size = args.hidden_units * 4  # Typically 4 times the hidden_size
         self.hidden_dropout_prob = args.dropout_rate
         self.attn_dropout_prob = args.attention_probs_dropout_prob
         self.hidden_act = args.hidden_act
@@ -23,9 +23,9 @@ class CL4SRec(nn.Module):
 
         self.initializer_range = 0.02
         self.max_seq_length = args.maxlen
-        self.temp = 0.2  # 对比学习温度参数
+        self.temp = 0.2  # Contrastive learning temperature parameter
 
-        # 定义层
+        # Define layers
         self.item_emb = nn.Embedding(self.item_num + 1, self.hidden_size, padding_idx=0)
         self.pos_emb = nn.Embedding(self.max_seq_length, self.hidden_size)
 
@@ -43,11 +43,11 @@ class CL4SRec(nn.Module):
         self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
         self.dropout = nn.Dropout(self.hidden_dropout_prob)
 
-        # 初始化权重
+        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """初始化权重"""
+        """Initialize weights"""
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=self.initializer_range)
         elif isinstance(module, nn.LayerNorm):
@@ -57,11 +57,11 @@ class CL4SRec(nn.Module):
             module.bias.data.zero_()
 
     def get_attention_mask(self, item_seq):
-        """生成注意力mask"""
+        """Generate attention mask"""
         attention_mask = (item_seq > 0).long()
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
 
-        # 因果注意力mask（左到右）
+        # Causal attention mask (left to right)
         max_len = attention_mask.size(-1)
         subsequent_mask = torch.triu(torch.ones((1, max_len, max_len), device=item_seq.device), diagonal=1)
         subsequent_mask = (subsequent_mask == 0).long()
@@ -73,85 +73,86 @@ class CL4SRec(nn.Module):
         return extended_attention_mask
 
     def log2feats(self, log_seqs):
-        """序列到特征转换"""
+        """Sequence to feature conversion"""
         item_seq = torch.LongTensor(log_seqs).to(self.device)
 
-        # 位置嵌入
+        # Position embedding
         seq_len = item_seq.size(1)
         position_ids = torch.arange(seq_len, dtype=torch.long, device=item_seq.device)
         position_ids = position_ids.unsqueeze(0).expand_as(item_seq)
         position_embedding = self.pos_emb(position_ids)
 
-        # 物品嵌入
+        # Item embedding
         item_embedding = self.item_emb(item_seq)
         input_emb = item_embedding + position_embedding
 
         input_emb = self.LayerNorm(input_emb)
         input_emb = self.dropout(input_emb)
 
-        # 注意力mask
+        # Attention mask
         attention_mask = self.get_attention_mask(item_seq)
 
-        # Transformer编码器
+        # Transformer encoder
         trm_output = self.trm_encoder(input_emb, attention_mask, output_all_encoded_layers=True)
-        output = trm_output[-1]  # 最后一层输出
+        output = trm_output[-1]  # Last layer output
 
         return output
 
     def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs):
-        """训练前向传播"""
+        """Training forward pass"""
         log_feats = self.log2feats(log_seqs)
 
-        # 获取正负样本嵌入
+        # Get positive and negative sample embeddings
         pos_embs = self.item_emb(torch.LongTensor(pos_seqs).to(self.device))
         neg_embs = self.item_emb(torch.LongTensor(neg_seqs).to(self.device))
 
-        # 使用最后一个位置的隐藏状态
+        # Use hidden state of the last position
         final_output = log_feats[:, -1, :]  # [batch_size, hidden_size]
 
-        # 计算logits
+        # Compute logits
         pos_logits = (final_output.unsqueeze(1) * pos_embs).sum(dim=-1)
         neg_logits = (final_output.unsqueeze(1) * neg_embs).sum(dim=-1)
 
         return pos_logits, neg_logits
 
     def predict(self, user_ids, log_seqs, item_indices):
-        """推理前向传播"""
+        """Inference forward pass"""
         log_feats = self.log2feats(log_seqs)
-        final_output = log_feats[:, -1, :]  # 最后一个位置
+        final_output = log_feats[:, -1, :]  # Last position
 
         item_embs = self.item_emb(torch.LongTensor(item_indices).to(self.device))
         logits = torch.matmul(item_embs, final_output.unsqueeze(-1)).squeeze(-1)
 
         return logits
 
-    # 对比学习相关方法
+    # Contrastive learning related methods
     def augmented_forward(self, seq, aug_seq):
-        """用于对比学习的前向传播"""
+        """Forward pass for contrastive learning"""
         seq_feats = self.log2feats(seq)
         aug_feats = self.log2feats(aug_seq)
 
-        seq_output = seq_feats[:, -1, :]  # 最后一个位置
+        seq_output = seq_feats[:, -1, :]  # Last position
         aug_output = aug_feats[:, -1, :]
 
         return seq_output, aug_output
 
     def contrastive_loss(self, seq_output, aug_output):
-        """计算对比学习损失"""
+        """Compute contrastive learning loss"""
         batch_size = seq_output.size(0)
 
-        # 归一化
+        # Normalize
         seq_output = F.normalize(seq_output, dim=1)
         aug_output = F.normalize(aug_output, dim=1)
 
-        # 计算相似度矩阵
+        # Compute similarity matrix
         logits = torch.matmul(seq_output, aug_output.T) / self.temp
 
-        # 对比学习目标
+        # Contrastive learning targets
         labels = torch.arange(batch_size, device=seq_output.device)
 
         loss = F.cross_entropy(logits, labels)
         return loss
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, layer_norm_eps):
@@ -189,14 +190,14 @@ class MultiHeadAttention(nn.Module):
         key_layer = self.transpose_for_scores(mixed_key_layer)
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
-        # 计算注意力分数
+        # Compute attention scores
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
-        # 应用注意力mask
+        # Apply attention mask
         attention_scores = attention_scores + attention_mask
 
-        # 注意力概率
+        # Attention probabilities
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
         attention_probs = self.attn_dropout(attention_probs)
 
@@ -205,7 +206,7 @@ class MultiHeadAttention(nn.Module):
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
-        # 输出投影
+        # Output projection
         hidden_states = self.dense(context_layer)
         hidden_states = self.out_dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)

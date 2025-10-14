@@ -13,7 +13,7 @@ class FEARec(nn.Module):
         self.item_num = item_num
         self.device = args.device
 
-        # 模型参数
+        # Model parameters
         self.n_layers = args.num_blocks
         self.n_heads = args.num_heads
         self.hidden_size = args.hidden_units
@@ -23,14 +23,14 @@ class FEARec(nn.Module):
         self.hidden_act = args.hidden_act
         self.layer_norm_eps = 1e-12
 
-        # 对比学习参数
+        # Contrastive learning parameters
         self.lmd = getattr(args, 'lmd', 0.1)
         self.lmd_sem = getattr(args, 'lmd_sem', 0.1)
         self.tau = getattr(args, 'tau', 1.0)
         self.ssl_mode = getattr(args, 'contrast', 'us_x')
         self.sim = getattr(args, 'sim', 'dot')
 
-        # 频域增强参数
+        # Frequency domain enhancement parameters
         self.fredom = getattr(args, 'fredom', True)
         self.fredom_type = getattr(args, 'fredom_type', 'us_x')
         self.global_ratio = getattr(args, 'global_ratio', 0.6)
@@ -41,11 +41,11 @@ class FEARec(nn.Module):
         self.initializer_range = 0.02
         self.max_seq_length = args.maxlen
 
-        # 定义层
+        # Define layers
         self.item_emb = nn.Embedding(self.item_num + 1, self.hidden_size, padding_idx=0)
         self.pos_emb = nn.Embedding(self.max_seq_length, self.hidden_size)
 
-        # FEA编码器
+        # FEA encoder
         self.encoder = nn.ModuleList([
             FEARecBlock(args, i, self.global_ratio, self.dual_domain, self.spatial_ratio, self.std)
             for i in range(args.num_blocks)
@@ -54,11 +54,11 @@ class FEARec(nn.Module):
         self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
         self.dropout = nn.Dropout(self.hidden_dropout_prob)
 
-        # 初始化权重
+        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """初始化权重"""
+        """Initialize weights"""
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=self.initializer_range)
         elif isinstance(module, nn.LayerNorm):
@@ -68,11 +68,11 @@ class FEARec(nn.Module):
             module.bias.data.zero_()
 
     def get_attention_mask(self, item_seq):
-        """生成因果注意力mask"""
+        """Generate causal attention mask"""
         attention_mask = (item_seq > 0).long()
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
 
-        # 因果注意力mask（左到右）
+        # Causal attention mask (left to right)
         max_len = attention_mask.size(-1)
         subsequent_mask = torch.triu(torch.ones((1, max_len, max_len), device=item_seq.device), diagonal=1)
         subsequent_mask = (subsequent_mask == 0).long()
@@ -84,71 +84,71 @@ class FEARec(nn.Module):
         return extended_attention_mask
 
     def log2feats(self, log_seqs):
-        """序列到特征转换"""
+        """Sequence to feature conversion"""
         item_seq = torch.LongTensor(log_seqs).to(self.device)
 
-        # 位置嵌入
+        # Position embedding
         seq_len = item_seq.size(1)
         position_ids = torch.arange(seq_len, dtype=torch.long, device=item_seq.device)
         position_ids = position_ids.unsqueeze(0).expand_as(item_seq)
         position_embedding = self.pos_emb(position_ids)
 
-        # 物品嵌入
+        # Item embedding
         item_embedding = self.item_emb(item_seq)
         input_emb = item_embedding + position_embedding
 
         input_emb = self.LayerNorm(input_emb)
         input_emb = self.dropout(input_emb)
 
-        # 注意力mask
+        # Attention mask
         attention_mask = self.get_attention_mask(item_seq)
 
-        # 编码器处理
+        # Encoder processing
         for layer in self.encoder:
             input_emb = layer(input_emb, attention_mask)
 
         return input_emb
 
     def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs):
-        """训练前向传播"""
+        """Training forward pass"""
         log_feats = self.log2feats(log_seqs)
 
-        # 获取正负样本嵌入
+        # Get positive and negative sample embeddings
         pos_embs = self.item_emb(torch.LongTensor(pos_seqs).to(self.device))
         neg_embs = self.item_emb(torch.LongTensor(neg_seqs).to(self.device))
 
-        # 使用最后一个位置的隐藏状态
+        # Use hidden state of the last position
         final_output = log_feats[:, -1, :]  # [batch_size, hidden_size]
 
-        # 计算logits
+        # Compute logits
         pos_logits = (final_output.unsqueeze(1) * pos_embs).sum(dim=-1)
         neg_logits = (final_output.unsqueeze(1) * neg_embs).sum(dim=-1)
 
         return pos_logits, neg_logits
 
     def predict(self, user_ids, log_seqs, item_indices):
-        """推理前向传播"""
+        """Inference forward pass"""
         log_feats = self.log2feats(log_seqs)
-        final_output = log_feats[:, -1, :]  # 最后一个位置
+        final_output = log_feats[:, -1, :]  # Last position
 
         item_embs = self.item_emb(torch.LongTensor(item_indices).to(self.device))
         logits = torch.matmul(item_embs, final_output.unsqueeze(-1)).squeeze(-1)
 
         return logits
 
-    # 对比学习和频域增强方法
+    # Contrastive learning and frequency domain enhancement methods
     def augmented_forward(self, seq):
-        """增强序列的前向传播"""
+        """Forward pass for augmented sequences"""
         return self.log2feats(seq)
 
     def info_nce(self, z_i, z_j, batch_size):
         """
-        对比学习InfoNCE损失计算
+        Contrastive learning InfoNCE loss calculation
         """
         N = 2 * batch_size
         z = torch.cat((z_i, z_j), dim=0)
 
-        # 使用点积相似度，温度参数tau=1
+        # Use dot product similarity with temperature parameter tau=1
         if self.sim == 'cos':
             sim_matrix = F.cosine_similarity(z.unsqueeze(1), z.unsqueeze(0), dim=2) / self.tau
         elif self.sim == 'dot':
@@ -159,7 +159,7 @@ class FEARec(nn.Module):
 
         positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0).reshape(N, 1)
 
-        # 创建负样本mask
+        # Create negative sample mask
         mask = self.mask_correlated_samples(batch_size)
         negative_samples = sim_matrix[mask].reshape(N, -1)
 
@@ -168,7 +168,7 @@ class FEARec(nn.Module):
         return logits, labels
 
     def mask_correlated_samples(self, batch_size):
-        """创建相关样本的mask"""
+        """Create mask for correlated samples"""
         N = 2 * batch_size
         mask = torch.ones((N, N), dtype=torch.bool, device=self.device)
         mask = mask.fill_diagonal_(0)
@@ -179,45 +179,45 @@ class FEARec(nn.Module):
 
     def calculate_contrastive_loss(self, original_seq, aug_seq=None, sem_aug_seq=None):
         """
-        计算对比学习损失 - 适配us_x模式
+        Calculate contrastive learning loss - adapted for us_x mode
         """
         batch_size = original_seq.shape[0]
         total_contrast_loss = 0.0
 
-        # 获取原始序列的特征
+        # Get features of original sequence
         original_feats = self.log2feats(original_seq)
         original_output = original_feats[:, -1, :]
 
-        # us_x模式：在增强视图和语义增强视图之间对比
+        # us_x mode: contrast between augmented view and semantic augmented view
         if self.ssl_mode == 'us_x' and aug_seq is not None and sem_aug_seq is not None:
-            # 获取增强序列的特征
+            # Get features of augmented sequence
             aug_feats = self.augmented_forward(aug_seq)
             aug_output = aug_feats[:, -1, :]
 
-            # 获取语义增强序列的特征
+            # Get features of semantic augmented sequence
             sem_aug_feats = self.augmented_forward(sem_aug_seq)
             sem_aug_output = sem_aug_feats[:, -1, :]
 
-            # 在增强视图和语义增强视图之间计算对比损失
+            # Calculate contrastive loss between augmented view and semantic augmented view
             nce_logits, nce_labels = self.info_nce(aug_output, sem_aug_output, batch_size)
             contrast_loss = F.cross_entropy(nce_logits, nce_labels)
 
-            # 频域增强损失（如果启用）
+            # Frequency domain enhancement loss (if enabled)
             if self.fredom and self.fredom_type == 'us_x':
-                # 频域转换
+                # Frequency domain transformation
                 aug_output_f = torch.fft.rfft(aug_output, dim=-1, norm='ortho')
                 sem_aug_output_f = torch.fft.rfft(sem_aug_output, dim=-1, norm='ortho')
                 freq_loss = 0.1 * torch.abs(aug_output_f - sem_aug_output_f).flatten().mean()
                 contrast_loss += freq_loss
 
-            # 应用权重
+            # Apply weight
             total_contrast_loss = self.lmd_sem * contrast_loss
 
         return total_contrast_loss
 
     def apply_augmentation(self, seq, aug_type='random_mask', mask_ratio=0.2):
         """
-        应用数据增强
+        Apply data augmentation
         """
         if aug_type == 'random_mask':
             return self.random_mask(seq, mask_ratio)
@@ -229,7 +229,7 @@ class FEARec(nn.Module):
             return seq
 
     def random_mask(self, seq, mask_ratio=0.2):
-        """随机掩码增强"""
+        """Random mask augmentation"""
         batch_size, seq_len = seq.shape
         mask = torch.rand(seq.shape, device=seq.device) < mask_ratio
         masked_seq = seq.clone()
@@ -237,7 +237,7 @@ class FEARec(nn.Module):
         return masked_seq
 
     def random_crop(self, seq, crop_ratio=0.8):
-        """随机裁剪增强"""
+        """Random crop augmentation"""
         batch_size, seq_len = seq.shape
         crop_len = int(seq_len * crop_ratio)
         start_idx = torch.randint(0, seq_len - crop_len + 1, (batch_size,), device=seq.device)
@@ -250,7 +250,7 @@ class FEARec(nn.Module):
         return cropped_seq
 
     def random_reorder(self, seq, reorder_ratio=0.2):
-        """随机重排增强"""
+        """Random reorder augmentation"""
         batch_size, seq_len = seq.shape
         reordered_seq = seq.clone()
 
@@ -266,7 +266,7 @@ class FEARec(nn.Module):
 
     def create_semantic_augmentation(self, seq):
         """
-        创建语义增强序列
+        Create semantic augmented sequence
         """
         return self.random_mask(seq, mask_ratio=0.3)
 
@@ -407,7 +407,7 @@ class FEARecAttention(nn.Module):
         return agg_values
 
     def _std_normalization(self, x):
-        """标准差归一化"""
+        """Standard deviation normalization"""
         mean = x.mean(dim=-1, keepdim=True)
         std = x.std(dim=-1, keepdim=True)
         return (x - mean) / (std + 1e-8)

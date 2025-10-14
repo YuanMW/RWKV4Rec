@@ -148,12 +148,12 @@ def evaluate(model, dataset, args):
 
         valid_user += 1
 
-        # 计算各个指标
+        # Calculate various metrics
         if rank < 10:
             NDCG += 1 / np.log2(rank + 2)
-            HT += 1 # 在topk中命中了目标项目
+            HT += 1 # Hit target item in topk
 
-        # 计算MRR (Mean Reciprocal Rank)
+        # Calculate MRR (Mean Reciprocal Rank)
         if rank < 10:
             MRR += 1 / (rank + 1)
 
@@ -161,7 +161,7 @@ def evaluate(model, dataset, args):
             print('.', end="")
             sys.stdout.flush()
 
-    # 返回所有指标
+    # Return all metrics
     return NDCG / valid_user, HT / valid_user, MRR / valid_user
 
 
@@ -207,12 +207,12 @@ def evaluate_valid(model, dataset, args):
 
         valid_user += 1
 
-        # 计算各个指标
+        # Calculate various metrics
         if rank < 10:
             NDCG += 1 / np.log2(rank + 2)
-            HT += 1 # 在topk中命中了目标项目
+            HT += 1 # Hit target item in topk
 
-        # 计算MRR (Mean Reciprocal Rank)
+        # Calculate MRR (Mean Reciprocal Rank)
         if rank < 10:
             MRR += 1 / (rank + 1)
 
@@ -220,5 +220,5 @@ def evaluate_valid(model, dataset, args):
             print('.', end="")
             sys.stdout.flush()
 
-    # 返回所有指标
+    # Return all metrics
     return NDCG / valid_user, HT / valid_user, MRR / valid_user
