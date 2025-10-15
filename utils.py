@@ -1,6 +1,5 @@
 import sys
 import copy
-import torch
 import random
 import numpy as np
 from collections import defaultdict
