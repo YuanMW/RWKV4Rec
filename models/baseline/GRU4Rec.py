@@ -1,9 +1,9 @@
 import torch
 from torch import nn
 
-class GRU4RecModel(torch.nn.Module):
+class GRU4Rec(torch.nn.Module):
     def __init__(self, user_num, item_num, args):
-        super(GRU4RecModel, self).__init__()
+        super(GRU4Rec, self).__init__()
 
         # Get parameters from args
         self.user_num = user_num

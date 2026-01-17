@@ -1,7 +1,7 @@
 import time
 import argparse
 import os
-from models.RWKV4Rec import *
+# from models.RWKV4Rec import *
 from utils import *
 
 def str2bool(s):
@@ -10,6 +10,7 @@ def str2bool(s):
     return s == 'true'
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--model', default='RWKV4Rec', type=str, help='Model name')
 parser.add_argument('--dataset', required=True)
 parser.add_argument('--train_dir', required=True)
 parser.add_argument('--batch_size', default=128, type=int)
@@ -59,8 +60,37 @@ if __name__ == '__main__':
 
     sampler = WarpSampler(user_train, usernum, itemnum, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
 
-    model = RWKV4Rec(usernum, itemnum, args).to(args.device) # no ReLU activation in original SASRec implementation?
-    # model.build_graph_from_sequences(user_train)
+    # Import the corresponding model based on the model name
+    if args.model == 'BERT4Rec':
+        from models.baseline.BERT4Rec import *
+        model = BERT4Rec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'BSARec':
+        from models.baseline.BSARec import *
+        model = BSARec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'CL4SRec':
+        from models.baseline.CL4SRec import *
+        model = CL4SRec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'SASRec':
+        from models.baseline.SASRec import *
+        model = SASRec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'GRU4Rec':
+        from models.baseline.GRU4Rec import *
+        model = GRU4Rec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'DuoRec':
+        from models.baseline.DuoRec import *
+        model = DuoRec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'FEARec':
+        from models.baseline.FEARec import *
+        model = FEARec(usernum, itemnum, args).to(args.device)
+    elif args.model == 'MAERec':
+        from models.baseline.MAERec import *
+        model = MAERec(usernum, itemnum, args).to(args.device)
+        model.build_graph_from_sequences(user_train)
+    else:
+        # Use RWKV4Rec by default
+        from models.RWKV4Rec import *
+        model = RWKV4Rec(usernum, itemnum, args).to(args.device)
+        print(f"Warning: Unknown model '{args.model}', using RWKV4Rec as default")
 
     # Calculate and print model parameter count
     total_params = sum(p.numel() for p in model.parameters())

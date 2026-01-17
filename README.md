@@ -7,8 +7,8 @@ cd RWKV4Rec
 pip install -r requirements.txt
 
 # Train RWKV4Rec model
-python main.py --dataset=ml-1m --train_dir=default --maxlen=200 --use_lora=False --device=cuda
-python main.py --dataset=Video --train_dir=default --maxlen=50 --use_lora=True  --device=cuda
+python main.py --dataset=ml-1m --train_dir=default --maxlen=200 --use_lora=False --model='RWKV4Rec' --device=cuda
+python main.py --dataset=Video --train_dir=default --maxlen=50 --use_lora=True  --model='RWKV4Rec' --device=cuda
 ```
 
 
